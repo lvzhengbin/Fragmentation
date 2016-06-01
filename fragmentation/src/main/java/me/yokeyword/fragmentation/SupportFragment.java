@@ -41,7 +41,7 @@ public class SupportFragment extends Fragment {
     private boolean mIsRoot;
 
     private InputMethodManager mIMM;
-    private OnEnterAnimEndListener mOnAnimEndListener;
+    private OnEnterAnimEndListener mOnAnimEndListener; // fragmentation所用
 
     protected SupportActivity _mActivity;
     protected Fragmentation mFragmentation;
@@ -52,6 +52,9 @@ public class SupportFragment extends Fragment {
     private boolean mNeedHideSoft;  // 隐藏软键盘
     protected boolean mLocking; // 是否加锁 用于SwipeBackLayout
     private boolean mIsHidden = true;   // 用于记录Fragment show/hide 状态
+
+    private DebounceAnimListener mDebounceAnimListener; // 防抖动监听动画
+    private boolean mEnterAnimFlag = false; // 用于记录无动画时 直接 解除防抖动处理
 
     @Override
     public void onAttach(Activity activity) {
@@ -100,12 +103,13 @@ public class SupportFragment extends Fragment {
         mPopExitAnim = AnimationUtils.loadAnimation(_mActivity, mFragmentAnimator.getPopExit());
 
         // 监听动画状态(for防抖动)
-        mEnterAnim.setAnimationListener(new DebounceAnimListener(true));
-        mPopEnterAnim.setAnimationListener(new DebounceAnimListener(false));
+        mDebounceAnimListener = new DebounceAnimListener();
+        mEnterAnim.setAnimationListener(mDebounceAnimListener);
     }
 
     private void handleNoAnim() {
         if (mFragmentAnimator.getEnter() == 0) {
+            mEnterAnimFlag = true;
             mFragmentAnimator.setEnter(R.anim.no_anim);
         }
         if (mFragmentAnimator.getExit() == 0) {
@@ -115,8 +119,47 @@ public class SupportFragment extends Fragment {
             mFragmentAnimator.setPopEnter(R.anim.no_anim);
         }
         if (mFragmentAnimator.getPopExit() == 0) {
+            // 用于解决 start新Fragment时,转场动画过程中上一个Fragment页面空白问题
             mFragmentAnimator.setPopExit(R.anim.pop_exit_no_anim);
         }
+    }
+
+    @Override
+    public Animation onCreateAnimation(int transit, boolean enter, int nextAnim) {
+        if (_mActivity.mPopMulitpleNoAnim || mLocking) {
+            return mNoAnim;
+        }
+        if (transit == FragmentTransaction.TRANSIT_FRAGMENT_OPEN) {
+            if (enter) {
+                if (mIsRoot) {
+                    mNoAnim.setAnimationListener(mDebounceAnimListener);
+                    return mNoAnim;
+                }
+                return mEnterAnim;
+            } else {
+                return mPopExitAnim;
+            }
+        } else if (transit == FragmentTransaction.TRANSIT_FRAGMENT_CLOSE) {
+            if (enter) {
+                return mPopEnterAnim;
+            } else {
+                return mExitAnim;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 设定当前Fragmemt动画,优先级比在SupportActivity里高
+     */
+    protected FragmentAnimator onCreateFragmentAnimation() {
+        return _mActivity.getFragmentAnimator();
+    }
+
+    /**
+     * 入栈动画 结束时,回调
+     */
+    protected void onEnterAnimationEnd() {
     }
 
     @Override
@@ -139,6 +182,15 @@ public class SupportFragment extends Fragment {
         // 防止某种情况 上一个Fragment仍可点击问题
         assert view != null;
         view.setClickable(true);
+
+        if (savedInstanceState != null) {
+            // 强杀重启时,系统默认Fragment恢复时无动画,所以这里手动调用下
+            onEnterAnimationEnd();
+            _mActivity.setFragmentClickable(true);
+        } else if (mEnterAnimFlag) {
+            _mActivity.setFragmentClickable(true);
+        }
+
     }
 
     protected void initFragmentBackground(View view) {
@@ -173,37 +225,6 @@ public class SupportFragment extends Fragment {
         return mPopExitAnim.getDuration();
     }
 
-
-    /**
-     * 设定当前Fragmemt动画,优先级比在SupportActivity里高
-     */
-    protected FragmentAnimator onCreateFragmentAnimation() {
-        return _mActivity.getFragmentAnimator();
-    }
-
-    @Override
-    public Animation onCreateAnimation(int transit, boolean enter, int nextAnim) {
-        if (_mActivity.mPopMulitpleNoAnim || mLocking) {
-            return mNoAnim;
-        }
-        if (transit == FragmentTransaction.TRANSIT_FRAGMENT_OPEN) {
-            if (enter) {
-                if (mIsRoot) {
-                    return mNoAnim;
-                }
-                return mEnterAnim;
-            } else {
-                return mPopExitAnim;
-            }
-        } else if (transit == FragmentTransaction.TRANSIT_FRAGMENT_CLOSE) {
-            if (enter) {
-                return mPopEnterAnim;
-            } else {
-                return mExitAnim;
-            }
-        }
-        return null;
-    }
 
     /**
      * (因为事务异步的原因) 如果你想在onCreateView/onActivityCreated中使用 start/pop 方法,请使用该方法把你的任务入队
@@ -461,23 +482,19 @@ public class SupportFragment extends Fragment {
      * 为了防抖动(点击过快)的动画监听器
      */
     private class DebounceAnimListener implements Animation.AnimationListener {
-        boolean isEnterAnim;
-
-        public DebounceAnimListener(boolean isEnterAnim) {
-            this.isEnterAnim = isEnterAnim;
-        }
 
         @Override
         public void onAnimationStart(Animation animation) {
-            _mActivity.setFragmentClickable(false);
         }
 
         @Override
         public void onAnimationEnd(Animation animation) {
-            if (isEnterAnim && mOnAnimEndListener != null) {
+            onEnterAnimationEnd();
+            _mActivity.setFragmentClickable(true);
+
+            if (mOnAnimEndListener != null) {
                 mOnAnimEndListener.onAnimationEnd();
             }
-            _mActivity.setFragmentClickable(true);
         }
 
         @Override
